@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_per_minute: int = Field(default=60)
 
+    # Webhooks
+    webhook_timeout_seconds: float = Field(default=5.0)
+    webhook_max_attempts: int = Field(default=3)
+    # Allows http:// and private/loopback receivers. Local development and tests only.
+    webhook_allow_private_urls: bool = Field(default=False)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

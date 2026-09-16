@@ -258,8 +258,8 @@
   },
   {
     "id": "C-04",
-    "title": "Orchestrator catches all exceptions from tool calls and continues without logging the failure",
-    "body": "The plan-execute loop wraps each tool call in a broad `except Exception` that silently continues. When a tool fails, the orchestrator produces a review with missing sections and no indication to the user that something went wrong.",
+    "title": "Failed tool calls recorded in `tool_results` never reach the review output",
+    "body": "`Orchestrator.run` logs each failed tool call and records it in `tool_results` with `success: False`, but no caller reads those entries. They should reach the review output so the user sees that a tool failed.",
     "labels": [
       "tier-2",
       "agent",
@@ -267,7 +267,7 @@
     ],
     "files": [
       "agent/orchestrator.py",
-      "agent/error_handling.py"
+      "core/services/review_service.py"
     ],
     "effort": "4–6 hours",
     "verified": "2026-09-16"
@@ -392,8 +392,8 @@
   },
   {
     "id": "D-04",
-    "title": "Prompt injection defense doesn't sanitize newline characters in user-supplied resume text",
-    "body": "Adversarial users can inject newline sequences into their resume text that terminate the system prompt and append new instructions. The sanitizer strips `<`, `>`, and `{` but misses `\\n---\\n` and `\\nSystem:` patterns.",
+    "title": "Injection detection misses role-switch lines with whitespace before the colon",
+    "body": "The role-switch pattern in `INJECTION_PATTERNS` requires the colon right after the role word, so text like `\\n System : ignore` is not detected. Allow whitespace between the role word and the colon.",
     "labels": [
       "tier-2",
       "safety",
@@ -683,7 +683,7 @@
   {
     "id": "F-12",
     "title": "Add a before/after comparison view for users who have completed multiple reviews",
-    "body": "Users who review their portfolio at two different points in time have no way to see how their scores changed. Add a comparison view that shows side-by-side diffs of two selected reviews.",
+    "body": "The Review History table shows each review's score and date, but two reviews can't be opened together, so their sections and suggestions are never compared. Add a side-by-side view of two selected reviews.",
     "labels": [
       "tier-3",
       "frontend",
@@ -789,7 +789,7 @@
   {
     "id": "G-16",
     "title": "Write a contributor onboarding guide that walks through a complete issue → PR lifecycle",
-    "body": "New contributors need a walkthrough that takes them from forking the repo to getting a PR merged. Cover: setting up the dev environment, running tests, finding and understanding an issue, making a change, and passing CI.",
+    "body": "`docs/SETUP.md` and `docs/CONTRIBUTING.md` document the fork-to-merge path in separate sections. Write a walkthrough that follows one issue from start to finish, and add `make test-integration` to CONTRIBUTING.md's list of local checks.",
     "labels": [
       "tier-3",
       "docs",
@@ -797,7 +797,8 @@
       "devops"
     ],
     "files": [
-      "docs/ONBOARDING.md"
+      "docs/ (new ONBOARDING.md)",
+      "docs/CONTRIBUTING.md"
     ],
     "effort": "4–7 hours",
     "verified": "2026-09-16"
@@ -936,8 +937,8 @@
   },
   {
     "id": "I-07",
-    "title": "Faithfulness checker can never mark short claims as supported",
-    "body": "`_is_supported()` requires at least 2 non-stopword tokens to overlap between a claim and the context. Short factual claims (e.g. “The candidate knows Python.”) share only one meaningful token with a fully supporting context, so they are always scored unsupported — feedback consisting of short, fully supported claims scores 0.0.\n\n**Steps to reproduce:**\n```python\nfrom rag.evaluator.faithfulness_checker import FaithfulnessChecker\nf = FaithfulnessChecker()\nprint(f.check('Knows Python. Knows SQL.', [{'text': 'python expert'}, {'text': 'sql expert'}]))\n# observed: 0.0  (both claims are supported by the context)\n```\nRelated failing tests: `test_partial_support_returns_middle_score`, `test_multiple_context_chunks`, `test_multiple_claims_varying_support` in `tests/unit/test_faithfulness_checker.py`.",
+    "title": "Faithfulness checker scores claims unsupported when the context uses different words",
+    "body": "`_is_supported()` in `faithfulness_checker.py` marks a claim supported only when it shares two or more words with the context, stop words excluded, so “Knows Python” scores 0.0 against “python expert” but 1.0 against “The candidate knows Python”. Support should not depend on shared wording.\n\n**Steps to reproduce:** `pytest tests/unit/test_faithfulness_checker.py -q` — observed: `assert 0.0 > 0.5` fails in `test_multiple_context_chunks`.",
     "labels": [
       "tier-1",
       "rag",

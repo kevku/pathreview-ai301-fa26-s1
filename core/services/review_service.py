@@ -6,11 +6,19 @@ import structlog
 from sqlalchemy import and_, select
 
 from api.schemas.review import FeedbackSection
+from api.schemas.webhook import WebhookEvent
 from core.models.ingested_source import IngestedSource
 from core.models.profile import Profile
 from core.models.review import Review
+from core.services.webhook_service import dispatch_review_event
 
 log = structlog.get_logger()
+
+# Safe, generic messages stored in review.error_message and sent in review.failed events.
+# Raw exception text goes to the error log only.
+PROFILE_NOT_FOUND_MESSAGE = "Profile not found."
+SAFETY_CHECK_FAILED_MESSAGE = "Review did not pass safety checks."
+INTERNAL_ERROR_MESSAGE = "An internal error occurred while processing the review."
 
 
 async def create_review(
@@ -113,9 +121,7 @@ async def process_review(
 
         if not profile:
             log.error("profile_not_found_for_processing", profile_id=str(profile_id))
-            review.status = "failed"
-            db.add(review)
-            await db.commit()
+            await _mark_failed(db, review, PROFILE_NOT_FOUND_MESSAGE)
             return
 
         # Step 1: Set status to processing
@@ -149,9 +155,7 @@ async def process_review(
         safety_checks_passed = await _run_safety_checks(rag_output)
         if not safety_checks_passed:
             log.warning("safety_checks_failed", review_id=str(review_id))
-            review.status = "failed"
-            db.add(review)
-            await db.commit()
+            await _mark_failed(db, review, SAFETY_CHECK_FAILED_MESSAGE)
             return
 
         # Step 6: Set status to complete and store sections
@@ -180,19 +184,49 @@ async def process_review(
             overall_score=review.overall_score,
         )
 
+        await _notify(review.id, WebhookEvent.REVIEW_COMPLETED)
+
     except Exception as exc:
         log.error("review_processing_failed", review_id=str(review_id), error=str(exc))
         try:
+            # Clear any failed transaction so the status update below can run
+            await db.rollback()
             stmt = select(Review).where(Review.id == review_id)
             result = await db.execute(stmt)
             review = result.scalars().first()
             if review:
-                review.status = "failed"
-                review.updated_at = datetime.utcnow()
-                db.add(review)
-                await db.commit()
+                await _mark_failed(db, review, INTERNAL_ERROR_MESSAGE)
         except Exception as e:
             log.error("review_status_update_failed", review_id=str(review_id), error=str(e))
+
+
+async def _mark_failed(db, review: Review, message: str) -> None:
+    """
+    Set a review to failed with a generic error message, commit, then send review.failed.
+    Every failure path in process_review goes through here so none can skip the notification.
+    """
+    review.status = "failed"
+    review.error_message = message
+    review.updated_at = datetime.utcnow()
+    db.add(review)
+    await db.commit()
+    await _notify(review.id, WebhookEvent.REVIEW_FAILED)
+
+
+async def _notify(review_id, event_type: WebhookEvent) -> None:
+    """
+    Dispatch a webhook event after the review's status is committed.
+    Delivery problems are logged and never change the review or raise.
+    """
+    try:
+        await dispatch_review_event(review_id, event_type)
+    except Exception as exc:
+        log.error(
+            "webhook_dispatch_error",
+            review_id=str(review_id),
+            event_type=event_type.value,
+            error=str(exc),
+        )
 
 
 async def _run_ingestion_pipeline(db, profile: Profile) -> list[dict]:
